@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dart_chromaprint/dart_chromaprint.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -40,26 +40,55 @@ class DemoPage extends StatefulWidget {
 }
 
 class _DemoPageState extends State<DemoPage> {
-  static const int _sampleRate = 11025;
-  static const int _channels = 2;
-  static const Duration _duration = Duration(seconds: 3);
   static const int _benchmarkIterations = 100;
+  static const int _defaultPcmSampleRate = 44100;
+  static const int _defaultPcmChannels = 2;
 
   final DartChromaprint _chromaprint = DartChromaprint();
 
-  bool _isLoading = true;
+  bool _isLoading = false;
   bool _isBenchmarking = false;
   String? _errorMessage;
-  _DemoFingerprint? _result;
+  _SelectionResult? _result;
   BenchmarkSummary? _benchmarkSummary;
 
-  @override
-  void initState() {
-    super.initState();
-    _recompute();
+  Future<void> _pickPcmFile() async {
+    await _pickAndFingerprintFile(isPcm: true);
   }
 
-  Future<void> _recompute() async {
+  Future<void> _pickWavFile() async {
+    await _pickAndFingerprintFile(isPcm: false);
+  }
+
+  Future<void> _pickAndFingerprintFile({required bool isPcm}) async {
+    final pickerResult = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: isPcm ? ['pcm'] : ['wav'],
+      allowMultiple: false,
+      withData: true,
+    );
+
+    if (pickerResult == null) {
+      return;
+    }
+
+    final file = pickerResult.files.single;
+    final bytes = file.bytes;
+    if (bytes == null) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = 'The selected file could not be loaded into memory.';
+      });
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _isBenchmarking = false;
@@ -69,41 +98,16 @@ class _DemoPageState extends State<DemoPage> {
     });
 
     try {
-      final demo = _buildDemoAudio(
-        sampleRate: _sampleRate,
-        channels: _channels,
-        duration: _duration,
-      );
-
-      final pcmFingerprint = _chromaprint.fingerprintStringFromInt16Pcm(
-        samples: demo.samples,
-        sampleRate: _sampleRate,
-        channels: _channels,
-      );
-      final wavFingerprint = _chromaprint.fingerprintStringFromWavBytes(
-        demo.wavBytes,
-      );
-      final fingerprintWords = _chromaprint.fingerprintWordsFromInt16Pcm(
-        samples: demo.samples,
-        sampleRate: _sampleRate,
-        channels: _channels,
-      );
+      final result = isPcm
+          ? _buildResultFromPcmBytes(fileName: file.name, bytes: bytes)
+          : _buildResultFromWavBytes(fileName: file.name, bytes: bytes);
 
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _result = _DemoFingerprint(
-          sampleRate: _sampleRate,
-          channels: _channels,
-          duration: _duration,
-          sampleCount: demo.samples.length,
-          fingerprintWords: fingerprintWords.length,
-          pcmFingerprint: pcmFingerprint,
-          wavFingerprint: wavFingerprint,
-        );
-        _benchmarkSummary = null;
+        _result = result;
       });
     } catch (error) {
       if (!mounted) {
@@ -122,17 +126,61 @@ class _DemoPageState extends State<DemoPage> {
     }
   }
 
+  _SelectionResult _buildResultFromPcmBytes({
+    required String fileName,
+    required Uint8List bytes,
+  }) {
+    final sampleRate = _defaultPcmSampleRate;
+    final channels = _defaultPcmChannels;
+    final samples = ChromaprintPreprocessor.decodeLittleEndianPcm(bytes);
+    final fingerprintWords = _chromaprint.fingerprintWordsFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+    final fingerprint = _chromaprint.fingerprintStringFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+
+    return _SelectionResult(
+      fileName: fileName,
+      formatLabel: 'PCM',
+      sampleRate: sampleRate,
+      channels: channels,
+      frameCount: samples.length ~/ channels,
+      fingerprintWords: fingerprintWords.length,
+      fingerprint: fingerprint,
+      samples: samples,
+    );
+  }
+
+  _SelectionResult _buildResultFromWavBytes({
+    required String fileName,
+    required Uint8List bytes,
+  }) {
+    final wav = const ChromaprintWavReader().parseBytes(bytes);
+    final fingerprintWords = _chromaprint.fingerprintWordsFromWavBytes(bytes);
+    final fingerprint = _chromaprint.fingerprintStringFromWavBytes(bytes);
+
+    return _SelectionResult(
+      fileName: fileName,
+      formatLabel: 'WAV',
+      sampleRate: wav.sampleRate,
+      channels: wav.channels,
+      frameCount: wav.samples.length ~/ wav.channels,
+      fingerprintWords: fingerprintWords.length,
+      fingerprint: fingerprint,
+      samples: wav.samples,
+    );
+  }
+
   Future<void> _runBenchmark() async {
     final result = _result;
     if (result == null) {
       return;
     }
-
-    final demo = _buildDemoAudio(
-      sampleRate: _sampleRate,
-      channels: _channels,
-      duration: _duration,
-    );
 
     setState(() {
       _isBenchmarking = true;
@@ -145,9 +193,9 @@ class _DemoPageState extends State<DemoPage> {
         iterations: _benchmarkIterations,
         body: () {
           return _chromaprint.fingerprintStringFromInt16Pcm(
-            samples: demo.samples,
-            sampleRate: _sampleRate,
-            channels: _channels,
+            samples: result.samples,
+            sampleRate: result.sampleRate,
+            channels: result.channels,
           );
         },
       );
@@ -162,7 +210,7 @@ class _DemoPageState extends State<DemoPage> {
           total: timedResult.total,
           averageMicros: timedResult.averageMicros,
           lastValue: timedResult.lastValue,
-          matchesBaseline: timedResult.lastValue == result.pcmFingerprint,
+          matchesBaseline: timedResult.lastValue == result.fingerprint,
         );
       });
     } catch (error) {
@@ -206,21 +254,21 @@ class _DemoPageState extends State<DemoPage> {
             padding: const EdgeInsets.all(20),
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 920),
+                constraints: const BoxConstraints(maxWidth: 960),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _HeroCard(
                       title: 'Dart Chromaprint',
                       subtitle:
-                          'Pure Dart PCM and WAV fingerprinting, no Rust bridge required.',
+                          'Pick a PCM or WAV file and calculate a fingerprint entirely in Dart.',
                       accent: scheme.primary,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'This demo synthesizes a short stereo signal in memory, calculates the fingerprint from raw PCM, then wraps the same samples as a WAV buffer and checks that both outputs match.',
-                            style: TextStyle(color: Colors.white),
+                            'WAV files are decoded with their embedded metadata. Raw PCM files use the app defaults for sample rate and channels.',
+                            style: const TextStyle(color: Colors.white),
                           ),
                           const SizedBox(height: 16),
                           Wrap(
@@ -228,7 +276,7 @@ class _DemoPageState extends State<DemoPage> {
                             runSpacing: 12,
                             children: [
                               FilledButton.icon(
-                                onPressed: _isLoading ? null : _recompute,
+                                onPressed: _isLoading ? null : _pickPcmFile,
                                 icon: _isLoading
                                     ? const SizedBox(
                                         width: 16,
@@ -237,15 +285,13 @@ class _DemoPageState extends State<DemoPage> {
                                           strokeWidth: 2,
                                         ),
                                       )
-                                    : const Icon(Icons.fingerprint),
-                                label: Text(
-                                  _isLoading ? 'Calculating...' : 'Recompute',
-                                ),
+                                    : const Icon(Icons.audio_file),
+                                label: const Text('Choose PCM file'),
                               ),
                               OutlinedButton.icon(
-                                onPressed: _isLoading ? null : _recompute,
-                                icon: const Icon(Icons.restart_alt),
-                                label: const Text('Run again'),
+                                onPressed: _isLoading ? null : _pickWavFile,
+                                icon: const Icon(Icons.graphic_eq),
+                                label: const Text('Choose WAV file'),
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Colors.white,
                                   side: BorderSide(
@@ -254,7 +300,10 @@ class _DemoPageState extends State<DemoPage> {
                                 ),
                               ),
                               OutlinedButton.icon(
-                                onPressed: _isLoading || _isBenchmarking
+                                onPressed:
+                                    _isLoading ||
+                                        _isBenchmarking ||
+                                        result == null
                                     ? null
                                     : _runBenchmark,
                                 icon: _isBenchmarking
@@ -308,19 +357,24 @@ class _DemoPageState extends State<DemoPage> {
                       _StatsGrid(result: result),
                       const SizedBox(height: 20),
                       _InfoCard(
-                        title: 'Fingerprints',
-                        trailing: _MatchChip(matches: result.matches),
+                        title: 'Fingerprint',
+                        trailing: _SectionChip(label: result.formatLabel),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _FingerprintField(
-                              label: 'From PCM',
-                              value: result.pcmFingerprint,
+                            _MetricRow(label: 'File', value: result.fileName),
+                            _MetricRow(
+                              label: 'Frames',
+                              value: '${result.frameCount}',
                             ),
-                            const SizedBox(height: 16),
+                            _MetricRow(
+                              label: 'Fingerprint words',
+                              value: '${result.fingerprintWords}',
+                            ),
+                            const SizedBox(height: 12),
                             _FingerprintField(
-                              label: 'From WAV bytes',
-                              value: result.wavFingerprint,
+                              label: 'Fingerprint string',
+                              value: result.fingerprint,
                             ),
                           ],
                         ),
@@ -329,8 +383,11 @@ class _DemoPageState extends State<DemoPage> {
                         const SizedBox(height: 20),
                         _InfoCard(
                           title: '100x Benchmark',
-                          trailing: _MatchChip(
-                            matches: _benchmarkSummary!.matchesBaseline,
+                          trailing: _SectionChip(
+                            label: _benchmarkSummary!.matchesBaseline
+                                ? 'Matches'
+                                : 'Mismatch',
+                            isPositive: _benchmarkSummary!.matchesBaseline,
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -361,7 +418,16 @@ class _DemoPageState extends State<DemoPage> {
                           ),
                         ),
                       ],
-                    ],
+                    ] else
+                      _InfoCard(
+                        title: 'Ready',
+                        child: Text(
+                          'Choose a PCM or WAV file to calculate its fingerprint.',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -373,33 +439,26 @@ class _DemoPageState extends State<DemoPage> {
   }
 }
 
-class _DemoFingerprint {
-  const _DemoFingerprint({
+class _SelectionResult {
+  const _SelectionResult({
+    required this.fileName,
+    required this.formatLabel,
     required this.sampleRate,
     required this.channels,
-    required this.duration,
-    required this.sampleCount,
+    required this.frameCount,
     required this.fingerprintWords,
-    required this.pcmFingerprint,
-    required this.wavFingerprint,
+    required this.fingerprint,
+    required this.samples,
   });
 
+  final String fileName;
+  final String formatLabel;
   final int sampleRate;
   final int channels;
-  final Duration duration;
-  final int sampleCount;
+  final int frameCount;
   final int fingerprintWords;
-  final String pcmFingerprint;
-  final String wavFingerprint;
-
-  bool get matches => pcmFingerprint == wavFingerprint;
-}
-
-class _DemoAudio {
-  const _DemoAudio({required this.samples, required this.wavBytes});
-
+  final String fingerprint;
   final Int16List samples;
-  final Uint8List wavBytes;
 }
 
 class BenchmarkSummary {
@@ -447,94 +506,6 @@ Future<_TimedResult<T>> _benchmark<T>({
     averageMicros: total.inMicroseconds / iterations,
     lastValue: lastValue,
   );
-}
-
-_DemoAudio _buildDemoAudio({
-  required int sampleRate,
-  required int channels,
-  required Duration duration,
-}) {
-  final frameCount = sampleRate * duration.inSeconds;
-  final samples = Int16List(frameCount * channels);
-  const amplitude = 0.65;
-
-  for (var frame = 0; frame < frameCount; frame++) {
-    final t = frame / sampleRate;
-    final left = math.sin(2.0 * math.pi * 220.0 * t);
-    final right = math.sin(2.0 * math.pi * 330.0 * t);
-    final leftSample = (left * amplitude * 32767.0).round().clamp(
-      -32768,
-      32767,
-    );
-    final rightSample = (right * amplitude * 32767.0).round().clamp(
-      -32768,
-      32767,
-    );
-
-    final offset = frame * channels;
-    samples[offset] = leftSample;
-    if (channels > 1) {
-      samples[offset + 1] = rightSample;
-    }
-    for (var channel = 2; channel < channels; channel++) {
-      samples[offset + channel] = leftSample;
-    }
-  }
-
-  return _DemoAudio(
-    samples: samples,
-    wavBytes: _buildPcm16WavBytes(
-      samples: samples,
-      sampleRate: sampleRate,
-      channels: channels,
-    ),
-  );
-}
-
-Uint8List _buildPcm16WavBytes({
-  required Int16List samples,
-  required int sampleRate,
-  required int channels,
-}) {
-  const bitsPerSample = 16;
-  final dataBytes = ByteData(samples.length * 2);
-  for (var i = 0; i < samples.length; i++) {
-    dataBytes.setInt16(i * 2, samples[i], Endian.little);
-  }
-
-  final bytesPerSample = bitsPerSample ~/ 8;
-  final byteRate = sampleRate * channels * bytesPerSample;
-  final blockAlign = channels * bytesPerSample;
-  final dataSize = dataBytes.lengthInBytes;
-  final fileSize = 36 + dataSize;
-
-  final output = BytesBuilder(copy: false)
-    ..add('RIFF'.codeUnits)
-    ..add(_uint32le(fileSize))
-    ..add('WAVE'.codeUnits)
-    ..add('fmt '.codeUnits)
-    ..add(_uint32le(16))
-    ..add(_uint16le(1))
-    ..add(_uint16le(channels))
-    ..add(_uint32le(sampleRate))
-    ..add(_uint32le(byteRate))
-    ..add(_uint16le(blockAlign))
-    ..add(_uint16le(bitsPerSample))
-    ..add('data'.codeUnits)
-    ..add(_uint32le(dataSize))
-    ..add(dataBytes.buffer.asUint8List());
-
-  return output.takeBytes();
-}
-
-Uint8List _uint16le(int value) {
-  final data = ByteData(2)..setUint16(0, value, Endian.little);
-  return data.buffer.asUint8List();
-}
-
-Uint8List _uint32le(int value) {
-  final data = ByteData(4)..setUint32(0, value, Endian.little);
-  return data.buffer.asUint8List();
 }
 
 class _HeroCard extends StatelessWidget {
@@ -649,12 +620,28 @@ class _InfoCard extends StatelessWidget {
 class _StatsGrid extends StatelessWidget {
   const _StatsGrid({required this.result});
 
-  final _DemoFingerprint result;
+  final _SelectionResult result;
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
+        Expanded(
+          child: _StatCard(
+            label: 'File',
+            value: result.fileName,
+            icon: Icons.insert_drive_file,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatCard(
+            label: 'Format',
+            value: result.formatLabel,
+            icon: Icons.description,
+          ),
+        ),
+        const SizedBox(width: 12),
         Expanded(
           child: _StatCard(
             label: 'Sample rate',
@@ -668,22 +655,6 @@ class _StatsGrid extends StatelessWidget {
             label: 'Channels',
             value: '${result.channels}',
             icon: Icons.audiotrack,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatCard(
-            label: 'Frames',
-            value: _formatDuration(result.duration),
-            icon: Icons.timelapse,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatCard(
-            label: 'Words',
-            value: '${result.fingerprintWords}',
-            icon: Icons.memory,
           ),
         ),
       ],
@@ -727,6 +698,8 @@ class _StatCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               value,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: theme.textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.w700,
               ),
@@ -812,6 +785,7 @@ class _MetricRow extends StatelessWidget {
             child: Text(
               value,
               textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodyMedium?.copyWith(
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
@@ -823,23 +797,24 @@ class _MetricRow extends StatelessWidget {
   }
 }
 
-class _MatchChip extends StatelessWidget {
-  const _MatchChip({required this.matches});
+class _SectionChip extends StatelessWidget {
+  const _SectionChip({required this.label, this.isPositive = true});
 
-  final bool matches;
+  final String label;
+  final bool isPositive;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final background = matches
+    final background = isPositive
         ? const Color(0xFFE8F6F1)
         : scheme.errorContainer;
-    final foreground = matches
+    final foreground = isPositive
         ? const Color(0xFF0F766E)
         : scheme.onErrorContainer;
 
     return Chip(
-      label: Text(matches ? 'PCM and WAV match' : 'Mismatch'),
+      label: Text(label),
       labelStyle: TextStyle(color: foreground, fontWeight: FontWeight.w700),
       backgroundColor: background,
       side: BorderSide(color: foreground.withValues(alpha: 0.25)),

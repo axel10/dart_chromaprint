@@ -5,14 +5,13 @@ import 'package:integration_test/integration_test.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('example app calculates matching PCM and WAV fingerprints', (
+  testWidgets('example app offers PCM and WAV file selection', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const MyApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('PCM and WAV match'), findsOneWidget);
-    expect(find.text('From PCM'), findsOneWidget);
-    expect(find.text('From WAV bytes'), findsOneWidget);
+    expect(find.text('Choose PCM file'), findsOneWidget);
+    expect(find.text('Choose WAV file'), findsOneWidget);
   });
 }
