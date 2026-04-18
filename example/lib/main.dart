@@ -4,7 +4,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:dart_chromaprint/dart_chromaprint.dart';
-import 'package:dart_chromaprint/chromaprint_api.dart' as internal_api;
+import 'package:dart_chromaprint/src/chromaprint_api.dart' as internal_api;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 

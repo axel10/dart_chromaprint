@@ -4,8 +4,8 @@ import 'dart:typed_data';
 import 'package:dart_chromaprint/dart_chromaprint.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../lib/chromaprint_preprocessing.dart';
-import '../lib/chromaprint_wav.dart';
+import 'package:dart_chromaprint/src/chromaprint_preprocessing.dart';
+import 'package:dart_chromaprint/src/chromaprint_wav.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

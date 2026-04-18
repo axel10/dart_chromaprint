@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'chromaprint_api.dart' as api;
+import 'src/chromaprint_api.dart' as api;
 
 /// Builds a Chromaprint fingerprint string from interleaved signed 16-bit PCM.
 ///
