@@ -1,6 +1,6 @@
 name: dart_chromaprint
 description: "Pure Dart Chromaprint fingerprinting for PCM and WAV inputs."
-version: 1.0.0
+version: 1.1.0
 homepage: https://github.com/axel10/dart_chromaprint
 license: Apache-2.0
 
