@@ -57,6 +57,8 @@ class _DemoPageState extends State<DemoPage> {
 
   bool _loading = false;
   bool _benchmarking = false;
+  _BenchmarkExecutionMode _benchmarkExecutionMode =
+      _BenchmarkExecutionMode.isolate;
   String? _error;
   String? _title;
   String? _fingerprint;
@@ -215,26 +217,38 @@ class _DemoPageState extends State<DemoPage> {
         if (selection == null) {
           throw StateError('Pick a PCM file first.');
         }
-        final pcm = selection.pcm;
-        final sampleRate = selection.sampleRate;
-        final channels = selection.channels;
-        final rawResult = await _runPcmBenchmarkInIsolate(
-          pcm: pcm,
-          sampleRate: sampleRate,
-          channels: channels,
-          iterations: iterations,
-        );
+        final rawResult = switch (_benchmarkExecutionMode) {
+          _BenchmarkExecutionMode.mainThread => _benchmarkPcm(
+              pcm: selection.pcm,
+              sampleRate: selection.sampleRate,
+              channels: selection.channels,
+              iterations: iterations,
+              executionLabel: 'Main thread',
+            ),
+          _BenchmarkExecutionMode.isolate => await _runPcmBenchmarkInIsolate(
+              pcm: selection.pcm,
+              sampleRate: selection.sampleRate,
+              channels: selection.channels,
+              iterations: iterations,
+            ),
+        };
         result = _benchmarkResultFromMap(rawResult);
       } else {
         final selection = _wavSelection;
         if (selection == null) {
           throw StateError('Pick a WAV file first.');
         }
-        final path = selection.path;
-        final rawResult = await _runWavBenchmarkInIsolate(
-          path: path,
-          iterations: iterations,
-        );
+        final rawResult = switch (_benchmarkExecutionMode) {
+          _BenchmarkExecutionMode.mainThread => _benchmarkWav(
+              path: selection.path,
+              iterations: iterations,
+              executionLabel: 'Main thread',
+            ),
+          _BenchmarkExecutionMode.isolate => await _runWavBenchmarkInIsolate(
+              path: selection.path,
+              iterations: iterations,
+            ),
+        };
         result = _benchmarkResultFromMap(rawResult);
       }
 
@@ -334,6 +348,15 @@ class _DemoPageState extends State<DemoPage> {
                             ],
                           ),
                           const SizedBox(height: 16),
+                          _BenchmarkModeSelector(
+                            value: _benchmarkExecutionMode,
+                            onChanged: (mode) {
+                              setState(() {
+                                _benchmarkExecutionMode = mode;
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 16),
                           Wrap(
                             spacing: 12,
                             runSpacing: 12,
@@ -429,13 +452,18 @@ class _DemoPageState extends State<DemoPage> {
                     if (_benchmarkResult != null) ...[
                       const SizedBox(height: 20),
                       _InfoCard(
-                        title: '30x Benchmark',
+                        title:
+                            '${_benchmarkResult!.iterations}x Benchmark',
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             _MetricRow(
-                              label: 'Mode',
-                              value: _benchmarkResult!.modeLabel,
+                              label: 'Input',
+                              value: _benchmarkResult!.inputLabel,
+                            ),
+                            _MetricRow(
+                              label: 'Execution',
+                              value: _benchmarkResult!.executionLabel,
                             ),
                             _MetricRow(
                               label: 'Iterations',
@@ -462,7 +490,7 @@ class _DemoPageState extends State<DemoPage> {
                       _InfoCard(
                         title: 'Ready',
                         child: Text(
-                          'Pick a PCM file or a WAV file to calculate its fingerprint. You can then run the 30x benchmark on the selected input.',
+                          'Pick a PCM file or a WAV file to calculate its fingerprint. You can then run the benchmark on the selected input using the chosen execution mode.',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -596,6 +624,68 @@ class _InfoCard extends StatelessWidget {
   }
 }
 
+class _BenchmarkModeSelector extends StatelessWidget {
+  const _BenchmarkModeSelector({
+    required this.value,
+    required this.onChanged,
+  });
+
+  final _BenchmarkExecutionMode value;
+  final ValueChanged<_BenchmarkExecutionMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Benchmark execution',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        ToggleButtons(
+          isSelected: [
+            value == _BenchmarkExecutionMode.mainThread,
+            value == _BenchmarkExecutionMode.isolate,
+          ],
+          onPressed: (index) {
+            onChanged(
+              index == 0
+                  ? _BenchmarkExecutionMode.mainThread
+                  : _BenchmarkExecutionMode.isolate,
+            );
+          },
+          borderRadius: BorderRadius.circular(14),
+          borderColor: Colors.white.withValues(alpha: 0.35),
+          selectedBorderColor: Colors.white,
+          fillColor: Colors.white,
+          color: Colors.white,
+          selectedColor: const Color(0xFF0F766E),
+          textStyle: const TextStyle(fontWeight: FontWeight.w700),
+          constraints: const BoxConstraints(minHeight: 44),
+          children: const [
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Text('Main thread'),
+            ),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Text('Isolate'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          value == _BenchmarkExecutionMode.mainThread
+              ? 'Runs the benchmark directly on the UI isolate.'
+              : 'Runs the benchmark inside a separate isolate.',
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.85)),
+        ),
+      ],
+    );
+  }
+}
+
 class _FingerprintField extends StatelessWidget {
   const _FingerprintField({required this.value});
 
@@ -667,14 +757,16 @@ class _MetricRow extends StatelessWidget {
 
 class BenchmarkResult {
   const BenchmarkResult({
-    required this.modeLabel,
+    required this.inputLabel,
+    required this.executionLabel,
     required this.iterations,
     required this.total,
     required this.averageMicros,
     required this.fingerprint,
   });
 
-  final String modeLabel;
+  final String inputLabel;
+  final String executionLabel;
   final int iterations;
   final Duration total;
   final double averageMicros;
@@ -701,6 +793,8 @@ class _WavSelection {
 
 enum _InputKind { pcm, wav }
 
+enum _BenchmarkExecutionMode { mainThread, isolate }
+
 Future<Map<String, Object>> _runPcmBenchmarkInIsolate({
   required Int16List pcm,
   required int sampleRate,
@@ -715,6 +809,7 @@ Future<Map<String, Object>> _runPcmBenchmarkInIsolate({
       sampleRate: sampleRate,
       channels: channels,
       iterations: iterations,
+      executionLabel: 'Isolate',
     ),
   );
 }
@@ -724,7 +819,13 @@ Future<Map<String, Object>> _runWavBenchmarkInIsolate({
   required int iterations,
 }) {
   // Same idea as the PCM path: only send plain data into the isolate.
-  return Isolate.run(() => _benchmarkWav(path: path, iterations: iterations));
+  return Isolate.run(
+    () => _benchmarkWav(
+      path: path,
+      iterations: iterations,
+      executionLabel: 'Isolate',
+    ),
+  );
 }
 
 Map<String, Object> _benchmarkPcm({
@@ -732,6 +833,7 @@ Map<String, Object> _benchmarkPcm({
   required int sampleRate,
   required int channels,
   required int iterations,
+  required String executionLabel,
 }) {
   final stopwatch = Stopwatch()..start();
   String lastFingerprint = '';
@@ -745,7 +847,8 @@ Map<String, Object> _benchmarkPcm({
   stopwatch.stop();
 
   return <String, Object>{
-    'modeLabel': 'PCM',
+    'inputLabel': 'PCM',
+    'executionLabel': executionLabel,
     'iterations': iterations,
     'totalMicros': stopwatch.elapsed.inMicroseconds,
     'averageMicros': stopwatch.elapsed.inMicroseconds / iterations,
@@ -756,6 +859,7 @@ Map<String, Object> _benchmarkPcm({
 Map<String, Object> _benchmarkWav({
   required String path,
   required int iterations,
+  required String executionLabel,
 }) {
   final pipeline = internal_api.ChromaprintPipeline();
   final stopwatch = Stopwatch()..start();
@@ -767,7 +871,8 @@ Map<String, Object> _benchmarkWav({
   stopwatch.stop();
 
   return <String, Object>{
-    'modeLabel': 'WAV',
+    'inputLabel': 'WAV',
+    'executionLabel': executionLabel,
     'iterations': iterations,
     'totalMicros': stopwatch.elapsed.inMicroseconds,
     'averageMicros': stopwatch.elapsed.inMicroseconds / iterations,
@@ -777,7 +882,8 @@ Map<String, Object> _benchmarkWav({
 
 BenchmarkResult _benchmarkResultFromMap(Map<String, Object> raw) {
   return BenchmarkResult(
-    modeLabel: raw['modeLabel'] as String,
+    inputLabel: raw['inputLabel'] as String,
+    executionLabel: raw['executionLabel'] as String,
     iterations: raw['iterations'] as int,
     total: Duration(microseconds: raw['totalMicros'] as int),
     averageMicros: raw['averageMicros'] as double,
