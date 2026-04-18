@@ -1,6 +1,6 @@
 # dart_chromaprint
 
-Pure Dart Chromaprint fingerprinting for PCM and WAV inputs.
+Pure Dart Chromaprint fingerprinting for PCM and WAV inputs. It largely references the implementation of rusty-chromaprint.
 
 ## Public API
 
