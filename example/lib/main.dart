@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
-import 'dart:ui';
 
 import 'package:dart_chromaprint/dart_chromaprint.dart';
+import 'package:dart_chromaprint/chromaprint_api.dart' as internal_api;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -50,15 +52,23 @@ class _DemoPageState extends State<DemoPage> {
   final TextEditingController _channelsController = TextEditingController(
     text: '2',
   );
+  final TextEditingController _benchmarkIterationsController =
+      TextEditingController(text: '30');
 
   bool _loading = false;
+  bool _benchmarking = false;
   String? _error;
   String? _title;
   String? _fingerprint;
+  _InputKind? _selectedKind;
+  _PcmSelection? _pcmSelection;
+  _WavSelection? _wavSelection;
+  BenchmarkResult? _benchmarkResult;
 
   Future<void> _pickPcmFile() async {
     await _pickAndFingerprint(
       title: 'PCM fingerprint',
+      kind: _InputKind.pcm,
       allowedExtensions: const ['pcm'],
       builder: (file) {
         final bytes = file.bytes;
@@ -76,6 +86,13 @@ class _DemoPageState extends State<DemoPage> {
         );
 
         final pcm = _decodeLittleEndianPcm(bytes);
+
+        _pcmSelection = _PcmSelection(
+          pcm: pcm,
+          sampleRate: sampleRate,
+          channels: channels,
+        );
+
         return fingerprintFromPcm(
           pcm: pcm,
           sampleRate: sampleRate,
@@ -88,6 +105,7 @@ class _DemoPageState extends State<DemoPage> {
   Future<void> _pickWavFile() async {
     await _pickAndFingerprint(
       title: 'WAV fingerprint',
+      kind: _InputKind.wav,
       allowedExtensions: const ['wav'],
       builder: (file) {
         final path = file.path;
@@ -95,6 +113,7 @@ class _DemoPageState extends State<DemoPage> {
           throw StateError('This platform did not provide a WAV file path.');
         }
 
+        _wavSelection = _WavSelection(path: path);
         return fingerprintFromWavFile(path);
       },
     );
@@ -104,11 +123,13 @@ class _DemoPageState extends State<DemoPage> {
   void dispose() {
     _sampleRateController.dispose();
     _channelsController.dispose();
+    _benchmarkIterationsController.dispose();
     super.dispose();
   }
 
   Future<void> _pickAndFingerprint({
     required String title,
+    required _InputKind kind,
     required List<String> allowedExtensions,
     required FutureOr<String> Function(PlatformFile file) builder,
   }) async {
@@ -131,9 +152,17 @@ class _DemoPageState extends State<DemoPage> {
 
     setState(() {
       _loading = true;
+      _benchmarking = false;
       _error = null;
       _title = null;
       _fingerprint = null;
+      _selectedKind = kind;
+      _benchmarkResult = null;
+      if (kind == _InputKind.pcm) {
+        _wavSelection = null;
+      } else {
+        _pcmSelection = null;
+      }
     });
 
     try {
@@ -158,6 +187,76 @@ class _DemoPageState extends State<DemoPage> {
       if (mounted) {
         setState(() {
           _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _runBenchmark() async {
+    final kind = _selectedKind;
+    if (kind == null || _loading || _benchmarking) {
+      return;
+    }
+
+    setState(() {
+      _benchmarking = true;
+      _error = null;
+      _benchmarkResult = null;
+    });
+
+    try {
+      late final BenchmarkResult result;
+      final iterations = _parseRequiredInt(
+        controller: _benchmarkIterationsController,
+        fieldName: 'benchmark iterations',
+      );
+      if (kind == _InputKind.pcm) {
+        final selection = _pcmSelection;
+        if (selection == null) {
+          throw StateError('Pick a PCM file first.');
+        }
+        final pcm = selection.pcm;
+        final sampleRate = selection.sampleRate;
+        final channels = selection.channels;
+        final rawResult = await _runPcmBenchmarkInIsolate(
+          pcm: pcm,
+          sampleRate: sampleRate,
+          channels: channels,
+          iterations: iterations,
+        );
+        result = _benchmarkResultFromMap(rawResult);
+      } else {
+        final selection = _wavSelection;
+        if (selection == null) {
+          throw StateError('Pick a WAV file first.');
+        }
+        final path = selection.path;
+        final rawResult = await _runWavBenchmarkInIsolate(
+          path: path,
+          iterations: iterations,
+        );
+        result = _benchmarkResultFromMap(rawResult);
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _benchmarkResult = result;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _error = '$error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _benchmarking = false;
         });
       }
     }
@@ -223,6 +322,18 @@ class _DemoPageState extends State<DemoPage> {
                             ],
                           ),
                           const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _NumberField(
+                                  controller: _benchmarkIterationsController,
+                                  label: 'Benchmark iterations',
+                                  hintText: '30',
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
                           Wrap(
                             spacing: 12,
                             runSpacing: 12,
@@ -236,6 +347,35 @@ class _DemoPageState extends State<DemoPage> {
                                 onPressed: _loading ? null : _pickWavFile,
                                 icon: const Icon(Icons.graphic_eq),
                                 label: const Text('Choose WAV file'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: BorderSide(
+                                    color: Colors.white.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed:
+                                    _loading ||
+                                        _benchmarking ||
+                                        _selectedKind == null
+                                    ? null
+                                    : _runBenchmark,
+                                icon: _benchmarking
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.speed),
+                                label: Text(
+                                  _benchmarking
+                                      ? 'Benchmarking'
+                                      : 'Run benchmark',
+                                ),
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Colors.white,
                                   side: BorderSide(
@@ -266,8 +406,8 @@ class _DemoPageState extends State<DemoPage> {
                             color: scheme.error,
                           ),
                         ),
-                      )
-                    else if (_fingerprint != null)
+                      ),
+                    if (_fingerprint != null)
                       _InfoCard(
                         title: _title ?? 'Fingerprint',
                         child: Column(
@@ -285,12 +425,44 @@ class _DemoPageState extends State<DemoPage> {
                             _FingerprintField(value: _fingerprint!),
                           ],
                         ),
-                      )
-                    else
+                      ),
+                    if (_benchmarkResult != null) ...[
+                      const SizedBox(height: 20),
+                      _InfoCard(
+                        title: '30x Benchmark',
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _MetricRow(
+                              label: 'Mode',
+                              value: _benchmarkResult!.modeLabel,
+                            ),
+                            _MetricRow(
+                              label: 'Iterations',
+                              value: '${_benchmarkResult!.iterations}',
+                            ),
+                            _MetricRow(
+                              label: 'Total',
+                              value: _formatDuration(_benchmarkResult!.total),
+                            ),
+                            _MetricRow(
+                              label: 'Average',
+                              value: _formatMicros(
+                                _benchmarkResult!.averageMicros,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            _FingerprintField(
+                              value: _benchmarkResult!.fingerprint,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else if (_fingerprint == null)
                       _InfoCard(
                         title: 'Ready',
                         child: Text(
-                          'Pick a PCM file or a WAV file to calculate its fingerprint.',
+                          'Pick a PCM file or a WAV file to calculate its fingerprint. You can then run the 30x benchmark on the selected input.',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -493,6 +665,126 @@ class _MetricRow extends StatelessWidget {
   }
 }
 
+class BenchmarkResult {
+  const BenchmarkResult({
+    required this.modeLabel,
+    required this.iterations,
+    required this.total,
+    required this.averageMicros,
+    required this.fingerprint,
+  });
+
+  final String modeLabel;
+  final int iterations;
+  final Duration total;
+  final double averageMicros;
+  final String fingerprint;
+}
+
+class _PcmSelection {
+  const _PcmSelection({
+    required this.pcm,
+    required this.sampleRate,
+    required this.channels,
+  });
+
+  final Int16List pcm;
+  final int sampleRate;
+  final int channels;
+}
+
+class _WavSelection {
+  const _WavSelection({required this.path});
+
+  final String path;
+}
+
+enum _InputKind { pcm, wav }
+
+Future<Map<String, Object>> _runPcmBenchmarkInIsolate({
+  required Int16List pcm,
+  required int sampleRate,
+  required int channels,
+  required int iterations,
+}) {
+  // Keep the isolate launch outside the widget State so the closure does not
+  // accidentally capture Flutter objects such as the binding or context.
+  return Isolate.run(
+    () => _benchmarkPcm(
+      pcm: pcm,
+      sampleRate: sampleRate,
+      channels: channels,
+      iterations: iterations,
+    ),
+  );
+}
+
+Future<Map<String, Object>> _runWavBenchmarkInIsolate({
+  required String path,
+  required int iterations,
+}) {
+  // Same idea as the PCM path: only send plain data into the isolate.
+  return Isolate.run(() => _benchmarkWav(path: path, iterations: iterations));
+}
+
+Map<String, Object> _benchmarkPcm({
+  required Int16List pcm,
+  required int sampleRate,
+  required int channels,
+  required int iterations,
+}) {
+  final stopwatch = Stopwatch()..start();
+  String lastFingerprint = '';
+  for (var i = 0; i < iterations; i++) {
+    lastFingerprint = fingerprintFromPcm(
+      pcm: pcm,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+  }
+  stopwatch.stop();
+
+  return <String, Object>{
+    'modeLabel': 'PCM',
+    'iterations': iterations,
+    'totalMicros': stopwatch.elapsed.inMicroseconds,
+    'averageMicros': stopwatch.elapsed.inMicroseconds / iterations,
+    'fingerprint': lastFingerprint,
+  };
+}
+
+Map<String, Object> _benchmarkWav({
+  required String path,
+  required int iterations,
+}) {
+  final pipeline = internal_api.ChromaprintPipeline();
+  final stopwatch = Stopwatch()..start();
+  String lastFingerprint = '';
+  for (var i = 0; i < iterations; i++) {
+    final bytes = File(path).readAsBytesSync();
+    lastFingerprint = pipeline.fingerprintStringFromWavBytes(bytes);
+  }
+  stopwatch.stop();
+
+  return <String, Object>{
+    'modeLabel': 'WAV',
+    'iterations': iterations,
+    'totalMicros': stopwatch.elapsed.inMicroseconds,
+    'averageMicros': stopwatch.elapsed.inMicroseconds / iterations,
+    'fingerprint': lastFingerprint,
+  };
+}
+
+BenchmarkResult _benchmarkResultFromMap(Map<String, Object> raw) {
+  return BenchmarkResult(
+    modeLabel: raw['modeLabel'] as String,
+    iterations: raw['iterations'] as int,
+    total: Duration(microseconds: raw['totalMicros'] as int),
+    averageMicros: raw['averageMicros'] as double,
+    fingerprint: raw['fingerprint'] as String,
+  );
+}
+
 class _NumberField extends StatelessWidget {
   const _NumberField({
     required this.controller,
@@ -539,4 +831,18 @@ int _parseRequiredInt({
     throw ArgumentError('$fieldName must be a positive integer.');
   }
   return value;
+}
+
+String _formatDuration(Duration duration) {
+  if (duration.inMilliseconds >= 1000) {
+    return '${(duration.inMilliseconds / 1000.0).toStringAsFixed(2)} s';
+  }
+  return '${duration.inMilliseconds} ms';
+}
+
+String _formatMicros(double micros) {
+  if (micros >= 1000.0) {
+    return '${(micros / 1000.0).toStringAsFixed(2)} ms';
+  }
+  return '${micros.toStringAsFixed(1)} us';
 }
