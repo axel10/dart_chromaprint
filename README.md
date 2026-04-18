@@ -2,24 +2,25 @@
 
 Pure Dart Chromaprint fingerprinting for PCM and WAV inputs.
 
-## Features
+## Public API
 
-- Convert interleaved signed 16-bit PCM into Chromaprint words
-- Encode Chromaprint words into the compact base64 fingerprint string
-- Read WAV bytes or WAV files and fingerprint them directly
-- Reuse the same pipeline across multiple fingerprint calculations
+This package exposes only two functions:
 
-## Quick Start
+- `fingerprintFromPcm`
+- `fingerprintFromWavFile`
+
+## PCM
+
+`fingerprintFromPcm` expects interleaved signed 16-bit PCM samples.
 
 ```dart
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dart_chromaprint/dart_chromaprint.dart';
 
-final samples = Int16List.fromList(<int>[0, 1200, -1200, 0]);
-final fingerprint = fingerprintStringFromInt16Pcm(
-  samples: samples,
+final pcm = Int16List.fromList(<int>[0, 1200, -1200, 0]);
+final fingerprint = fingerprintFromPcm(
+  pcm: pcm,
   sampleRate: 11025,
   channels: 2,
 );
@@ -27,14 +28,18 @@ final fingerprint = fingerprintStringFromInt16Pcm(
 print(fingerprint);
 ```
 
-## WAV Input
+## WAV File
+
+`fingerprintFromWavFile` reads a WAV file directly from its path.
 
 ```dart
-final bytes = await File('song.wav').readAsBytes();
-final fingerprint = fingerprintStringFromWavBytes(bytes);
+import 'package:dart_chromaprint/dart_chromaprint.dart';
+
+final fingerprint = await fingerprintFromWavFile('song.wav');
+print(fingerprint);
 ```
 
 ## Example
 
-Run the bundled example app to see a generated stereo signal fingerprinted
-from both raw PCM and WAV bytes.
+Run the bundled example app to pick a PCM file or a WAV file and fingerprint
+it with the matching API.
