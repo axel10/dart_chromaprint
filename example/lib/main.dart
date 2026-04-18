@@ -681,6 +681,11 @@ class _BenchmarkModeSelector extends StatelessWidget {
               : 'Runs the benchmark inside a separate isolate.',
           style: TextStyle(color: Colors.white.withValues(alpha: 0.85)),
         ),
+
+        Text(
+          'The test directory in the project root directory contains test pcm and wav files (test_decoded.pcm, test.wav).',
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.85),fontSize: 16,fontWeight: FontWeight.w700),
+        ),
       ],
     );
   }
