@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -42,12 +43,15 @@ class _DemoPageState extends State<DemoPage> {
   static const int _sampleRate = 11025;
   static const int _channels = 2;
   static const Duration _duration = Duration(seconds: 3);
+  static const int _benchmarkIterations = 100;
 
   final DartChromaprint _chromaprint = DartChromaprint();
 
   bool _isLoading = true;
+  bool _isBenchmarking = false;
   String? _errorMessage;
   _DemoFingerprint? _result;
+  BenchmarkSummary? _benchmarkSummary;
 
   @override
   void initState() {
@@ -58,8 +62,10 @@ class _DemoPageState extends State<DemoPage> {
   Future<void> _recompute() async {
     setState(() {
       _isLoading = true;
+      _isBenchmarking = false;
       _errorMessage = null;
       _result = null;
+      _benchmarkSummary = null;
     });
 
     try {
@@ -97,6 +103,7 @@ class _DemoPageState extends State<DemoPage> {
           pcmFingerprint: pcmFingerprint,
           wavFingerprint: wavFingerprint,
         );
+        _benchmarkSummary = null;
       });
     } catch (error) {
       if (!mounted) {
@@ -110,6 +117,66 @@ class _DemoPageState extends State<DemoPage> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _runBenchmark() async {
+    final result = _result;
+    if (result == null) {
+      return;
+    }
+
+    final demo = _buildDemoAudio(
+      sampleRate: _sampleRate,
+      channels: _channels,
+      duration: _duration,
+    );
+
+    setState(() {
+      _isBenchmarking = true;
+      _errorMessage = null;
+      _benchmarkSummary = null;
+    });
+
+    try {
+      final timedResult = await _benchmark<String>(
+        iterations: _benchmarkIterations,
+        body: () {
+          return _chromaprint.fingerprintStringFromInt16Pcm(
+            samples: demo.samples,
+            sampleRate: _sampleRate,
+            channels: _channels,
+          );
+        },
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _benchmarkSummary = BenchmarkSummary(
+          iterations: _benchmarkIterations,
+          total: timedResult.total,
+          averageMicros: timedResult.averageMicros,
+          lastValue: timedResult.lastValue,
+          matchesBaseline: timedResult.lastValue == result.pcmFingerprint,
+        );
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = '$error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isBenchmarking = false;
         });
       }
     }
@@ -153,7 +220,7 @@ class _DemoPageState extends State<DemoPage> {
                         children: [
                           Text(
                             'This demo synthesizes a short stereo signal in memory, calculates the fingerprint from raw PCM, then wraps the same samples as a WAV buffer and checks that both outputs match.',
-                            style: theme.textTheme.bodyMedium,
+                            style: TextStyle(color: Colors.white),
                           ),
                           const SizedBox(height: 16),
                           Wrap(
@@ -179,6 +246,37 @@ class _DemoPageState extends State<DemoPage> {
                                 onPressed: _isLoading ? null : _recompute,
                                 icon: const Icon(Icons.restart_alt),
                                 label: const Text('Run again'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: BorderSide(
+                                    color: Colors.white.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: _isLoading || _isBenchmarking
+                                    ? null
+                                    : _runBenchmark,
+                                icon: _isBenchmarking
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.speed),
+                                label: Text(
+                                  _isBenchmarking
+                                      ? 'Benchmarking...'
+                                      : 'Run 100x Benchmark',
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: BorderSide(
+                                    color: Colors.white.withValues(alpha: 0.7),
+                                  ),
+                                ),
                               ),
                             ],
                           ),
@@ -227,6 +325,42 @@ class _DemoPageState extends State<DemoPage> {
                           ],
                         ),
                       ),
+                      if (_benchmarkSummary != null) ...[
+                        const SizedBox(height: 20),
+                        _InfoCard(
+                          title: '100x Benchmark',
+                          trailing: _MatchChip(
+                            matches: _benchmarkSummary!.matchesBaseline,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _MetricRow(
+                                label: 'Iterations',
+                                value: '${_benchmarkSummary!.iterations}',
+                              ),
+                              _MetricRow(
+                                label: 'Total',
+                                value: _formatDuration(
+                                  _benchmarkSummary!.total,
+                                ),
+                              ),
+                              _MetricRow(
+                                label: 'Average',
+                                value: _formatMicros(
+                                  _benchmarkSummary!.averageMicros,
+                                ),
+                              ),
+                              _MetricRow(
+                                label: 'Output matches current result',
+                                value: _benchmarkSummary!.matchesBaseline
+                                    ? 'Yes'
+                                    : 'No',
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ],
                 ),
@@ -266,6 +400,53 @@ class _DemoAudio {
 
   final Int16List samples;
   final Uint8List wavBytes;
+}
+
+class BenchmarkSummary {
+  const BenchmarkSummary({
+    required this.iterations,
+    required this.total,
+    required this.averageMicros,
+    required this.lastValue,
+    required this.matchesBaseline,
+  });
+
+  final int iterations;
+  final Duration total;
+  final double averageMicros;
+  final String lastValue;
+  final bool matchesBaseline;
+}
+
+class _TimedResult<T> {
+  const _TimedResult({
+    required this.total,
+    required this.averageMicros,
+    required this.lastValue,
+  });
+
+  final Duration total;
+  final double averageMicros;
+  final T lastValue;
+}
+
+Future<_TimedResult<T>> _benchmark<T>({
+  required int iterations,
+  required FutureOr<T> Function() body,
+}) async {
+  T lastValue = await body();
+  final stopwatch = Stopwatch()..start();
+  for (var i = 0; i < iterations; i++) {
+    lastValue = await body();
+  }
+  stopwatch.stop();
+
+  final total = stopwatch.elapsed;
+  return _TimedResult(
+    total: total,
+    averageMicros: total.inMicroseconds / iterations,
+    lastValue: lastValue,
+  );
 }
 
 _DemoAudio _buildDemoAudio({
@@ -579,21 +760,65 @@ class _FingerprintField extends StatelessWidget {
         const SizedBox(height: 8),
         Container(
           width: double.infinity,
+          constraints: const BoxConstraints(minHeight: 88, maxHeight: 220),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: const Color(0xFFF7FAFA),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: const Color(0xFFD8E3E1)),
           ),
-          child: SelectableText(
-            value,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-              height: 1.5,
+          child: Scrollbar(
+            child: SingleChildScrollView(
+              child: SelectableText(
+                value,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  fontSize: 11.5,
+                  height: 1.5,
+                ),
+              ),
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _MetricRow extends StatelessWidget {
+  const _MetricRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -623,6 +848,15 @@ class _MatchChip extends StatelessWidget {
 }
 
 String _formatDuration(Duration duration) {
-  final seconds = duration.inMilliseconds / 1000.0;
-  return '${seconds.toStringAsFixed(1)} s';
+  if (duration.inMilliseconds >= 1000) {
+    return '${(duration.inMilliseconds / 1000.0).toStringAsFixed(2)} s';
+  }
+  return '${duration.inMilliseconds} ms';
+}
+
+String _formatMicros(double micros) {
+  if (micros >= 1000.0) {
+    return '${(micros / 1000.0).toStringAsFixed(2)} ms';
+  }
+  return '${micros.toStringAsFixed(1)} us';
 }
