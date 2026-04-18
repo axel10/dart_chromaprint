@@ -1,30 +1,163 @@
-import 'package:flutter_test/flutter_test.dart';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:dart_chromaprint/dart_chromaprint.dart';
-import 'package:dart_chromaprint/dart_chromaprint_platform_interface.dart';
-import 'package:dart_chromaprint/dart_chromaprint_method_channel.dart';
-import 'package:plugin_platform_interface/plugin_platform_interface.dart';
-
-class MockDartChromaprintPlatform
-    with MockPlatformInterfaceMixin
-    implements DartChromaprintPlatform {
-  @override
-  Future<String?> getPlatformVersion() => Future.value('42');
-}
-
-// test_decoded.pcm的指纹结果是 AQAAjE-WUNKy4MKbJDnC5IbmB7mKdkfDPziPpzmaOAquIh_KDnr2JMjjwsepTMLDKSj_IMxCHDpRigqaZzgNLdklotu3QsuU8AhPo_9x1BtWool0tOU8HPiReNN4RPouwVk-9Aw-KS1-fMHf4B9C8Yd8OEaP_9ARmclxC60lo34wapGOWhk8MhWRIG-Gpj--5LiYC_7xq8OP05ERND8q_cOVIxd6Fz8enIVjKRxCK1cCHRcR3oM_VHokPMeH78PvoFeOMJegZ0eoFdaPly_8HQ8Ljz8sijgV4XvQKJRxZ0CEM5A8WsHFOcgSu6inEIiPxMe_4TgTURGenMSHiUWY79iLUzYensIPvWPwEKV0IcwLHo-DSufx6GC4BG-PHzkj4iXUJUzwHcCEMwopAYgFDFGAFAAAAG4AA0QQQog6DGgBABHOQUMkJQBohQChkgIAFCAGEYAcQEgQA4ATRAAnhVCUQAIIUoAAQwAygBABCDMEAAUIEQQISQxCxAgCAHCGGc2BQEYgA5AQCAE
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  final DartChromaprintPlatform initialPlatform = DartChromaprintPlatform.instance;
+  TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('$MethodChannelDartChromaprint is the default instance', () {
-    expect(initialPlatform, isInstanceOf<MethodChannelDartChromaprint>());
+  test('decodeLittleEndianPcm decodes signed 16-bit samples', () {
+    final bytes = Uint8List.fromList(<int>[
+      0x34,
+      0x12,
+      0xCC,
+      0xFF,
+      0x00,
+      0x80,
+      0xFF,
+      0x7F,
+    ]);
+
+    final samples = ChromaprintPreprocessor.decodeLittleEndianPcm(bytes);
+
+    expect(
+      samples,
+      equals(Int16List.fromList(<int>[0x1234, -52, -32768, 32767])),
+    );
   });
 
-  test('getPlatformVersion', () async {
-    DartChromaprint dartChromaprintPlugin = DartChromaprint();
-    MockDartChromaprintPlatform fakePlatform = MockDartChromaprintPlatform();
-    DartChromaprintPlatform.instance = fakePlatform;
+  test('PCM and WAV fingerprint APIs stay in sync on the bundled fixture', () {
+    const sampleRate = 44100;
+    const channels = 2;
+    const pcmPath = 'test/test_decoded.pcm';
 
-    expect(await dartChromaprintPlugin.getPlatformVersion(), '42');
+    final pcmBytes = File(pcmPath).readAsBytesSync();
+    final samples = ChromaprintPreprocessor.decodeLittleEndianPcm(
+      Uint8List.sublistView(pcmBytes),
+    );
+    final wavBytes = _buildPcm16WavBytes(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+
+    final pipeline = ChromaprintPipeline();
+    final facade = DartChromaprint(pipeline: pipeline);
+
+    final wordsFromPipeline = pipeline.fingerprintWordsFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+    final wordsFromFacade = facade.fingerprintWordsFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+    final stringFromPcm = fingerprintStringFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+    final stringFromWavBytes = fingerprintStringFromWavBytes(wavBytes);
+    expect(wordsFromPipeline, equals(wordsFromFacade));
+    expect(stringFromPcm, isNotEmpty);
+    expect(stringFromWavBytes, isNotEmpty);
+    expect(stringFromPcm, equals(stringFromWavBytes));
+
+    expect(
+      pipeline.fingerprintStringFromInt16Pcm(
+        samples: samples,
+        sampleRate: sampleRate,
+        channels: channels,
+      ),
+      equals(stringFromPcm),
+    );
   });
+
+  test('reusing a pipeline keeps fingerprint results stable', () {
+    const sampleRate = 44100;
+    const channels = 2;
+
+    final bytes = File('test/test_decoded.pcm').readAsBytesSync();
+    final samples = ChromaprintPreprocessor.decodeLittleEndianPcm(
+      Uint8List.sublistView(bytes),
+    );
+    final pipeline = ChromaprintPipeline();
+
+    final first = pipeline.fingerprintWordsFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+    final second = pipeline.fingerprintWordsFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+    final baseline = fingerprintWordsFromInt16Pcm(
+      samples: samples,
+      sampleRate: sampleRate,
+      channels: channels,
+    );
+
+    expect(first, equals(baseline));
+    expect(second, equals(baseline));
+  });
+
+  test('invalid PCM input is rejected', () {
+    expect(
+      () => ChromaprintPreprocessor.decodeLittleEndianPcm(
+        Uint8List.fromList(<int>[0x01]),
+      ),
+      throwsArgumentError,
+    );
+  });
+}
+
+Uint8List _buildPcm16WavBytes({
+  required Int16List samples,
+  required int sampleRate,
+  required int channels,
+}) {
+  const bitsPerSample = 16;
+  final dataBytes = ByteData(samples.length * 2);
+  for (var i = 0; i < samples.length; i++) {
+    dataBytes.setInt16(i * 2, samples[i], Endian.little);
+  }
+
+  final bytesPerSample = bitsPerSample ~/ 8;
+  final byteRate = sampleRate * channels * bytesPerSample;
+  final blockAlign = channels * bytesPerSample;
+  final dataSize = dataBytes.lengthInBytes;
+  final fileSize = 36 + dataSize;
+
+  final output = BytesBuilder(copy: false)
+    ..add('RIFF'.codeUnits)
+    ..add(_uint32le(fileSize))
+    ..add('WAVE'.codeUnits)
+    ..add('fmt '.codeUnits)
+    ..add(_uint32le(16))
+    ..add(_uint16le(1))
+    ..add(_uint16le(channels))
+    ..add(_uint32le(sampleRate))
+    ..add(_uint32le(byteRate))
+    ..add(_uint16le(blockAlign))
+    ..add(_uint16le(bitsPerSample))
+    ..add('data'.codeUnits)
+    ..add(_uint32le(dataSize))
+    ..add(dataBytes.buffer.asUint8List());
+
+  return output.takeBytes();
+}
+
+Uint8List _uint16le(int value) {
+  final data = ByteData(2)..setUint16(0, value, Endian.little);
+  return data.buffer.asUint8List();
+}
+
+Uint8List _uint32le(int value) {
+  final data = ByteData(4)..setUint32(0, value, Endian.little);
+  return data.buffer.asUint8List();
 }

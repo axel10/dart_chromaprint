@@ -1,10 +1,12 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'chromaprint_encoding.dart';
 import 'chromaprint_features.dart';
 import 'chromaprint_fft.dart';
 import 'chromaprint_fingerprint.dart';
+import 'chromaprint_io_stub.dart'
+    if (dart.library.io) 'chromaprint_io.dart'
+    as chromaprint_io;
 import 'chromaprint_preprocessing.dart';
 import 'chromaprint_wav.dart';
 
@@ -85,7 +87,7 @@ class ChromaprintPipeline {
   }
 
   Future<Uint32List> fingerprintWordsFromWavFile(String path) async {
-    final bytes = await File(path).readAsBytes();
+    final bytes = await chromaprint_io.readFileBytes(path);
     return fingerprintWordsFromWavBytes(bytes);
   }
 
@@ -101,7 +103,7 @@ class ChromaprintPipeline {
     String path, {
     int algorithmId = chromaprintAlgorithmIdTest2,
   }) async {
-    final bytes = await File(path).readAsBytes();
+    final bytes = await chromaprint_io.readFileBytes(path);
     return fingerprintStringFromWavBytes(bytes, algorithmId: algorithmId);
   }
 }

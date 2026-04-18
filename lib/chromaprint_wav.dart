@@ -1,5 +1,8 @@
-import 'dart:io';
 import 'dart:typed_data';
+
+import 'chromaprint_io_stub.dart'
+    if (dart.library.io) 'chromaprint_io.dart'
+    as chromaprint_io;
 
 class ChromaprintWavFile {
   const ChromaprintWavFile({
@@ -17,7 +20,7 @@ class ChromaprintWavReader {
   const ChromaprintWavReader();
 
   Future<ChromaprintWavFile> readFile(String path) async {
-    final bytes = await File(path).readAsBytes();
+    final bytes = await chromaprint_io.readFileBytes(path);
     return parseBytes(bytes);
   }
 

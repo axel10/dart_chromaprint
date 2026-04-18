@@ -1,5 +1,5 @@
 name: dart_chromaprint
-description: "A new Flutter plugin project."
+description: "Pure Dart Chromaprint fingerprinting for PCM and WAV inputs."
 version: 0.0.1
 homepage:
 
