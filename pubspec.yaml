@@ -52,7 +52,7 @@ flutter:
         pluginClass: DartChromaprintPluginCApi
       web:
         pluginClass: DartChromaprintWeb
-        fileName: dart_chromaprint_web.dart
+        fileName: src/dart_chromaprint_web.dart
 
   # To add assets to your plugin package, add an assets section, like this:
   # assets:
