@@ -1,3 +1,7 @@
+## 1.1.1
+
+* Add .pubignore
+
 ## 1.1.0
 
 * Modify the project structure and move the inner classes to src.
